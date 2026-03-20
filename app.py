@@ -1,116 +1,316 @@
-# app.py
-# Public Transport Trend Analysis (2019 vs 2022)
-# Default datasets expected next to app.py:
-#   - 2019data0.csv
-#   - 2022data0.csv
-#
-# Non-negotiables:
-# - Light theme only
-# - Card UI styling (rounded cards, subtle border/shadow)
-# - Clean professional labels (no emojis)
-# - Sidebar radio navigation
-# - KPI cards ONLY on Summary page
-# - Insights page with exact structure:
-#   1) Data-driven insights
-#   2) Model-driven insights
-# - Stand-alone wording (no notebook references)
-#
-# Data loading rules:
-# - Default loads the local files above
-# - Optional sidebar toggles to upload CSVs instead
-# - No URL loading
-
 from __future__ import annotations
 
 import io
 import os
 from dataclasses import dataclass
-from typing import Optional, Tuple, Dict, List
+from html import escape
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 
 from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_absolute_error, r2_score
+from sklearn.model_selection import train_test_split
 
+
+# =========================================================
+# Page config
+# =========================================================
+st.set_page_config(
+    page_title="Public Transport Demand Intelligence Dashboard",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
 DEFAULT_2019 = "2019data0.csv"
 DEFAULT_2022 = "2022data0.csv"
 
+BUS_COLS = ["Bus pax number peak", "Bus pax number offpeak"]
+TRAM_COLS = ["Tram pax number peak", "Tram pax number offpeak"]
+METRO_COLS = ["Metro pax number peak", "Metro pax number offpeak"]
 
-# ----------------------------
-# UI (light + cards)
-# ----------------------------
+WEEKDAY_ORDER = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+MONTH_ORDER = list(range(1, 13))
+MONTH_LABELS = {
+    1: "Jan", 2: "Feb", 3: "Mar", 4: "Apr",
+    5: "May", 6: "Jun", 7: "Jul", 8: "Aug",
+    9: "Sep", 10: "Oct", 11: "Nov", 12: "Dec",
+}
+
+
+# =========================================================
+# Styling
+# =========================================================
 def inject_css() -> None:
     st.markdown(
         """
         <style>
-          .stApp { background: #fafafa; color: #111827; }
-          section[data-testid="stSidebar"] {
-            background: #ffffff;
-            border-right: 1px solid rgba(15, 23, 42, 0.08);
+          :root{
+            --bg:#f6f8fc;
+            --panel:#ffffff;
+            --text:#111827;
+            --muted:#6b7280;
+            --border:rgba(17,24,39,0.10);
+            --shadow:0 10px 30px rgba(15,23,42,0.06);
+            --radius:18px;
+            --accent:#1d4ed8;
+            --accent-soft:rgba(29,78,216,0.08);
           }
 
-          .card {
-            background: #ffffff;
-            border: 1px solid rgba(15, 23, 42, 0.10);
-            border-radius: 14px;
-            padding: 16px 16px;
-            box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+          html, body, [data-testid="stAppViewContainer"]{
+            background:var(--bg) !important;
+            color:var(--text) !important;
           }
-          .card h3 { margin: 0 0 8px 0; }
-          .muted { color: rgba(17, 24, 39, 0.70); font-size: 0.92rem; }
 
-          .kpi-grid {
-            display: grid;
-            grid-template-columns: repeat(4, minmax(0, 1fr));
-            gap: 12px;
+          [data-testid="stHeader"]{
+            background:rgba(246,248,252,0.82);
           }
-          .kpi {
-            background: #ffffff;
-            border: 1px solid rgba(15, 23, 42, 0.10);
-            border-radius: 14px;
-            padding: 14px 14px;
-            box-shadow: 0 1px 2px rgba(0,0,0,0.04);
-          }
-          .kpi .label { color: rgba(17, 24, 39, 0.70); font-size: 0.85rem; margin-bottom: 6px; }
-          .kpi .value { font-size: 1.35rem; font-weight: 700; color: #111827; line-height: 1.1; }
-          .kpi .sub { margin-top: 6px; color: rgba(17, 24, 39, 0.65); font-size: 0.85rem; }
 
-          @media (max-width: 1100px) { .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-          @media (max-width: 600px) { .kpi-grid { grid-template-columns: repeat(1, minmax(0, 1fr)); } }
+          [data-testid="stSidebar"]{
+            background:#ffffff !important;
+            border-right:1px solid var(--border);
+          }
+
+          .block-container{
+            padding-top:1.2rem;
+            padding-bottom:2.4rem;
+            max-width:1400px;
+          }
+
+          .hero{
+            background:linear-gradient(135deg, #ffffff 0%, #f9fbff 100%);
+            border:1px solid var(--border);
+            border-radius:24px;
+            padding:24px 24px 18px 24px;
+            box-shadow:var(--shadow);
+            margin-bottom:18px;
+          }
+
+          .hero-title{
+            font-size:30px;
+            font-weight:800;
+            letter-spacing:-0.02em;
+            margin:0 0 8px 0;
+            color:var(--text);
+          }
+
+          .hero-sub{
+            margin:0;
+            font-size:15px;
+            line-height:1.6;
+            color:var(--muted);
+            max-width:980px;
+          }
+
+          .hero-strip{
+            margin-top:14px;
+            padding:10px 12px;
+            border-radius:14px;
+            background:var(--accent-soft);
+            border:1px solid rgba(29,78,216,0.12);
+            color:#1e3a8a;
+            font-size:13px;
+          }
+
+          .section-title{
+            font-size:18px;
+            font-weight:800;
+            color:var(--text);
+            margin:0 0 10px 0;
+          }
+
+          .card{
+            background:var(--panel);
+            border:1px solid var(--border);
+            border-radius:var(--radius);
+            box-shadow:var(--shadow);
+            padding:16px;
+          }
+
+          .card-title{
+            margin:0 0 6px 0;
+            font-size:16px;
+            font-weight:800;
+            color:var(--text);
+          }
+
+          .card-sub{
+            margin:0 0 12px 0;
+            color:var(--muted);
+            font-size:13px;
+            line-height:1.5;
+          }
+
+          .kpi-grid{
+            display:grid;
+            grid-template-columns:repeat(6, minmax(0, 1fr));
+            gap:12px;
+            margin-bottom:10px;
+          }
+
+          @media (max-width:1280px){
+            .kpi-grid{ grid-template-columns:repeat(3, minmax(0, 1fr)); }
+          }
+
+          @media (max-width:700px){
+            .kpi-grid{ grid-template-columns:repeat(2, minmax(0, 1fr)); }
+          }
+
+          @media (max-width:540px){
+            .kpi-grid{ grid-template-columns:repeat(1, minmax(0, 1fr)); }
+          }
+
+          .kpi-card{
+            background:var(--panel);
+            border:1px solid var(--border);
+            border-radius:16px;
+            box-shadow:var(--shadow);
+            padding:14px;
+            min-height:108px;
+          }
+
+          .kpi-label{
+            font-size:12px;
+            color:var(--muted);
+            margin-bottom:8px;
+          }
+
+          .kpi-value{
+            font-size:24px;
+            font-weight:800;
+            line-height:1.1;
+            color:var(--text);
+            margin-bottom:8px;
+          }
+
+          .kpi-note{
+            font-size:12px;
+            color:var(--muted);
+            line-height:1.45;
+          }
+
+          .insight-list{
+            margin:0;
+            padding-left:18px;
+          }
+
+          .insight-list li{
+            margin-bottom:8px;
+            line-height:1.55;
+            color:var(--text);
+          }
+
+          .badge-row{
+            display:flex;
+            flex-wrap:wrap;
+            gap:8px;
+            margin-top:6px;
+          }
+
+          .badge{
+            display:inline-block;
+            padding:6px 10px;
+            border-radius:999px;
+            background:#f8fafc;
+            border:1px solid var(--border);
+            color:var(--text);
+            font-size:12px;
+          }
+
+          .divider{
+            height:1px;
+            background:var(--border);
+            margin:10px 0 14px 0;
+          }
+
+          .js-plotly-plot .plotly .modebar{
+            opacity:0.08;
+          }
+
+          .js-plotly-plot .plotly:hover .modebar{
+            opacity:1;
+          }
         </style>
         """,
         unsafe_allow_html=True,
     )
 
 
-def kpi_card(label: str, value: str, sub: str = "") -> str:
-    sub_html = f'<div class="sub">{sub}</div>' if sub else ""
-    return f"""
-      <div class="kpi">
-        <div class="label">{label}</div>
-        <div class="value">{value}</div>
-        {sub_html}
-      </div>
-    """
+inject_css()
 
 
-def card(title: str, body_html: str) -> None:
-    st.markdown(
-        f"""
-        <div class="card">
-          <h3>{title}</h3>
-          <div class="muted">{body_html}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+# =========================================================
+# Formatting helpers
+# =========================================================
+def fmt_number(x: Optional[float], digits: int = 0) -> str:
+    if x is None or pd.isna(x):
+        return "N/A"
+    return f"{x:,.{digits}f}"
 
 
-# ----------------------------
-# Robust CSV loading (encoding + delimiter)
-# ----------------------------
+def fmt_pct(x: Optional[float], digits: int = 1) -> str:
+    if x is None or pd.isna(x):
+        return "N/A"
+    return f"{x:,.{digits}f}%"
+
+
+def safe_divide(a: float, b: float) -> float:
+    if b == 0 or pd.isna(b):
+        return np.nan
+    return a / b
+
+
+def esc(text: str) -> str:
+    return escape(str(text))
+
+
+# =========================================================
+# UI helpers
+# =========================================================
+def render_section_title(text: str) -> None:
+    st.markdown(f"<div class='section-title'>{esc(text)}</div>", unsafe_allow_html=True)
+
+
+def render_kpis(items: List[Tuple[str, str, str]]) -> None:
+    blocks: List[str] = []
+    for label, value, note in items:
+        blocks.append(
+            "<div class='kpi-card'>"
+            f"<div class='kpi-label'>{esc(label)}</div>"
+            f"<div class='kpi-value'>{esc(value)}</div>"
+            f"<div class='kpi-note'>{esc(note)}</div>"
+            "</div>"
+        )
+    st.markdown("<div class='kpi-grid'>" + "".join(blocks) + "</div>", unsafe_allow_html=True)
+
+
+def render_list_card(title: str, items: List[str], subtitle: str = "") -> None:
+    html = "<div class='card'>"
+    html += f"<div class='card-title'>{esc(title)}</div>"
+    if subtitle:
+        html += f"<div class='card-sub'>{esc(subtitle)}</div>"
+    html += "<ul class='insight-list'>"
+    for item in items:
+        html += f"<li>{esc(item)}</li>"
+    html += "</ul></div>"
+    st.markdown(html, unsafe_allow_html=True)
+
+
+def render_badges(items: List[str]) -> None:
+    html = "<div class='badge-row'>"
+    for item in items:
+        html += f"<span class='badge'>{esc(item)}</span>"
+    html += "</div>"
+    st.markdown(html, unsafe_allow_html=True)
+
+
+# =========================================================
+# CSV loading
+# =========================================================
 @dataclass
 class DataMeta:
     source_2019: str
@@ -118,7 +318,7 @@ class DataMeta:
 
 
 def _decode_bytes(b: bytes) -> str:
-    for enc in ("utf-8", "utf-8-sig", "latin1"):
+    for enc in ("utf-8", "utf-8-sig", "latin1", "cp1252"):
         try:
             return b.decode(enc)
         except Exception:
@@ -138,67 +338,45 @@ def _detect_delimiter(sample_text: str) -> str:
 
 
 def safe_read_csv(file_bytes: bytes) -> pd.DataFrame:
-    txt = _decode_bytes(file_bytes[:4096])
-    sep = _detect_delimiter(txt)
+    sample = _decode_bytes(file_bytes[:4096])
+    sep = _detect_delimiter(sample)
 
-    # Try detected delimiter
-    try:
-        df = pd.read_csv(io.BytesIO(file_bytes), sep=sep)
-    except Exception:
-        df = None
+    for try_sep in [sep, ",", ";", "\t", "|"]:
+        try:
+            df = pd.read_csv(io.BytesIO(file_bytes), sep=try_sep, low_memory=False)
+            if df.shape[1] > 1:
+                return df
+        except Exception:
+            continue
 
-    # Fallbacks
-    if df is None:
-        for s in [";", ",", "\t", "|"]:
-            try:
-                df = pd.read_csv(io.BytesIO(file_bytes), sep=s)
-                break
-            except Exception:
-                df = None
-
-    if df is None:
-        df = pd.read_csv(io.BytesIO(file_bytes))
-
-    # Retry if it collapsed into 1 column but looks delimited
-    if df.shape[1] == 1:
-        col0 = df.columns[0]
-        sample_val = str(df.iloc[0, 0]) if len(df) else ""
-        if ";" in col0 or ";" in sample_val:
-            try:
-                df = pd.read_csv(io.BytesIO(file_bytes), sep=";")
-            except Exception:
-                pass
-
-    return df
+    return pd.read_csv(io.BytesIO(file_bytes), low_memory=False)
 
 
 @st.cache_data(show_spinner=False)
 def load_two_files(
     use_upload_2019: bool,
-    upload_2019,
+    upload_2019_bytes: Optional[bytes],
+    upload_2019_name: Optional[str],
     use_upload_2022: bool,
-    upload_2022,
+    upload_2022_bytes: Optional[bytes],
+    upload_2022_name: Optional[str],
 ) -> Tuple[pd.DataFrame, pd.DataFrame, DataMeta]:
-    # 2019
-    if use_upload_2019 and upload_2019 is not None:
-        b = upload_2019.read()
-        df2019 = safe_read_csv(b)
-        src2019 = f"Uploaded: {upload_2019.name}"
+    if use_upload_2019 and upload_2019_bytes is not None:
+        df2019 = safe_read_csv(upload_2019_bytes)
+        src2019 = f"Uploaded: {upload_2019_name or '2019.csv'}"
     else:
         if not os.path.exists(DEFAULT_2019):
-            raise FileNotFoundError(f"Missing {DEFAULT_2019} next to app.py (or upload it in the sidebar).")
+            raise FileNotFoundError(f"Missing {DEFAULT_2019} next to app.py, or upload it in the sidebar.")
         with open(DEFAULT_2019, "rb") as f:
             df2019 = safe_read_csv(f.read())
         src2019 = f"Default: {DEFAULT_2019}"
 
-    # 2022
-    if use_upload_2022 and upload_2022 is not None:
-        b = upload_2022.read()
-        df2022 = safe_read_csv(b)
-        src2022 = f"Uploaded: {upload_2022.name}"
+    if use_upload_2022 and upload_2022_bytes is not None:
+        df2022 = safe_read_csv(upload_2022_bytes)
+        src2022 = f"Uploaded: {upload_2022_name or '2022.csv'}"
     else:
         if not os.path.exists(DEFAULT_2022):
-            raise FileNotFoundError(f"Missing {DEFAULT_2022} next to app.py (or upload it in the sidebar).")
+            raise FileNotFoundError(f"Missing {DEFAULT_2022} next to app.py, or upload it in the sidebar.")
         with open(DEFAULT_2022, "rb") as f:
             df2022 = safe_read_csv(f.read())
         src2022 = f"Default: {DEFAULT_2022}"
@@ -206,121 +384,156 @@ def load_two_files(
     return df2019, df2022, DataMeta(source_2019=src2019, source_2022=src2022)
 
 
-# ----------------------------
-# Core transforms (based on your script)
-# ----------------------------
-BUS_COLS = ["Bus pax number peak", "Bus pax number offpeak"]
-TRAM_COLS = ["Tram pax number peak", "Tram pax number offpeak"]
-METRO_COLS = ["Metro pax number peak", "Metro pax number offpeak"]
-
-WEEKDAY_ORDER = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-
-
-def fourier_smooth(y: np.ndarray, n_terms: int = 8) -> np.ndarray:
-    y = np.asarray(y, dtype=float)
-    if y.size < 10:
-        return y
-    N = len(y)
-    fft_vals = np.fft.rfft(y)
-    keep = max(1, int(n_terms) + 1)
-    fft_vals[keep:] = 0
-    return np.fft.irfft(fft_vals, n=N)
+# =========================================================
+# Data preparation
+# =========================================================
+def detect_datetime_col_2022(df: pd.DataFrame) -> Optional[str]:
+    for c in df.columns:
+        key = c.lower().strip()
+        if key in {"date and time", "datetime", "date_time", "timestamp"}:
+            return c
+    for c in df.columns:
+        key = c.lower()
+        if "date" in key and "time" in key:
+            return c
+    return None
 
 
 @st.cache_data(show_spinner=False)
 def build_2019_daily(df2019: pd.DataFrame) -> pd.DataFrame:
     d = df2019.copy()
+
     if "Date" not in d.columns:
         raise ValueError("2019 dataset must contain a 'Date' column.")
 
     d["Date"] = pd.to_datetime(d["Date"], errors="coerce")
     d = d.dropna(subset=["Date"]).sort_values("Date").reset_index(drop=True)
 
-    needed = [c for c in (BUS_COLS + TRAM_COLS + METRO_COLS) if c in d.columns]
-    if len(needed) == 0:
-        raise ValueError("2019 dataset is missing passenger count columns for Bus/Tram/Metro.")
+    present_bus = [c for c in BUS_COLS if c in d.columns]
+    present_tram = [c for c in TRAM_COLS if c in d.columns]
+    present_metro = [c for c in METRO_COLS if c in d.columns]
+    present_all = present_bus + present_tram + present_metro
 
-    for c in needed:
+    if not present_all:
+        raise ValueError("2019 dataset is missing passenger count columns for Bus, Tram, and Metro.")
+
+    for c in present_all:
         d[c] = pd.to_numeric(d[c], errors="coerce")
 
-    d["Total passengers"] = d[needed].sum(axis=1, skipna=True)
+    d["Bus total"] = d[present_bus].sum(axis=1, skipna=True) if present_bus else 0.0
+    d["Tram total"] = d[present_tram].sum(axis=1, skipna=True) if present_tram else 0.0
+    d["Metro total"] = d[present_metro].sum(axis=1, skipna=True) if present_metro else 0.0
+    d["Total passengers"] = d[["Bus total", "Tram total", "Metro total"]].sum(axis=1, skipna=True)
+
     d["Day"] = d["Date"].dt.day_name()
     d["Day"] = pd.Categorical(d["Day"], categories=WEEKDAY_ORDER, ordered=True)
+    d["Month"] = d["Date"].dt.month
+    d["Month label"] = d["Month"].map(MONTH_LABELS)
+    d["Day index"] = np.arange(1, len(d) + 1)
+
     return d
 
 
 @st.cache_data(show_spinner=False)
 def build_2022_daily_expanded(df2022: pd.DataFrame, total_annual_passengers: float) -> Tuple[pd.DataFrame, float]:
-    """
-    Expands sample counts to annual estimated totals using:
-      expansion_factor = total_annual_passengers / total_sample
-      daily_total = daily_sample * expansion_factor
-    """
     d = df2022.copy()
-
-    # Find datetime column
-    dt_col = None
-    for c in d.columns:
-        if c.lower().strip() in {"date and time", "datetime", "date_time", "timestamp"}:
-            dt_col = c
-            break
+    dt_col = detect_datetime_col_2022(d)
     if dt_col is None:
-        # heuristic
-        for c in d.columns:
-            if "date" in c.lower() and "time" in c.lower():
-                dt_col = c
-                break
-    if dt_col is None:
-        raise ValueError("2022 dataset must contain a datetime column like 'Date and time'.")
+        raise ValueError("2022 dataset must contain a datetime column such as 'Date and time'.")
 
     d[dt_col] = pd.to_datetime(d[dt_col], errors="coerce")
-    d = d.dropna(subset=[dt_col]).reset_index(drop=True)
-    d["Date"] = d[dt_col].dt.date
+    d = d.dropna(subset=[dt_col]).copy()
+    if d.empty:
+        raise ValueError("2022 dataset has no valid datetime rows after parsing.")
 
+    d["Date"] = d[dt_col].dt.date
     daily = d.groupby("Date").size().reset_index(name="Sample")
+
     sample_total = float(daily["Sample"].sum())
     if sample_total <= 0:
-        raise ValueError("2022 dataset has no valid sample rows after datetime parsing.")
+        raise ValueError("2022 dataset has no valid sample rows after preprocessing.")
 
     expansion_factor = float(total_annual_passengers) / sample_total
     daily["Total passengers"] = daily["Sample"] * expansion_factor
 
     daily["Date"] = pd.to_datetime(daily["Date"], errors="coerce")
     daily = daily.dropna(subset=["Date"]).sort_values("Date").reset_index(drop=True)
-
     daily["Day"] = daily["Date"].dt.day_name()
     daily["Day"] = pd.Categorical(daily["Day"], categories=WEEKDAY_ORDER, ordered=True)
+    daily["Month"] = daily["Date"].dt.month
+    daily["Month label"] = daily["Month"].map(MONTH_LABELS)
+    daily["Day index"] = np.arange(1, len(daily) + 1)
 
     return daily, expansion_factor
 
 
+@st.cache_data(show_spinner=False)
+def clean_2022_raw(df2022: pd.DataFrame) -> pd.DataFrame:
+    d = df2022.copy()
+    dt_col = detect_datetime_col_2022(d)
+    if dt_col is not None:
+        d[dt_col] = pd.to_datetime(d[dt_col], errors="coerce")
+
+    if "Mode" in d.columns:
+        d["Mode"] = d["Mode"].astype(str).str.strip().str.title()
+
+    if "Distance" in d.columns:
+        d["Distance"] = pd.to_numeric(d["Distance"], errors="coerce")
+
+    if "Price" in d.columns:
+        d["Price"] = pd.to_numeric(d["Price"], errors="coerce")
+
+    return d
+
+
+# =========================================================
+# Analytics helpers
+# =========================================================
+def fourier_smooth(y: np.ndarray, n_terms: int = 8) -> np.ndarray:
+    y = np.asarray(y, dtype=float)
+    if y.size < 10:
+        return y
+    n = len(y)
+    fft_vals = np.fft.rfft(y)
+    keep = max(1, int(n_terms) + 1)
+    fft_vals[keep:] = 0
+    return np.fft.irfft(fft_vals, n=n)
+
+
+@st.cache_data(show_spinner=False)
+def weekday_profile(df: pd.DataFrame) -> pd.Series:
+    return df.groupby("Day")["Total passengers"].mean().reindex(WEEKDAY_ORDER)
+
+
+@st.cache_data(show_spinner=False)
+def month_profile(df: pd.DataFrame) -> pd.Series:
+    return df.groupby("Month")["Total passengers"].mean().reindex(MONTH_ORDER)
+
+
+@st.cache_data(show_spinner=False)
 def compute_mode_shares_2019(df2019_daily: pd.DataFrame) -> Dict[str, float]:
-    d = df2019_daily.copy()
+    bus_total = float(pd.to_numeric(df2019_daily["Bus total"], errors="coerce").sum()) if "Bus total" in df2019_daily.columns else 0.0
+    tram_total = float(pd.to_numeric(df2019_daily["Tram total"], errors="coerce").sum()) if "Tram total" in df2019_daily.columns else 0.0
+    metro_total = float(pd.to_numeric(df2019_daily["Metro total"], errors="coerce").sum()) if "Metro total" in df2019_daily.columns else 0.0
 
-    totals: Dict[str, float] = {}
-
-    for label, cols in [("Bus", BUS_COLS), ("Tram", TRAM_COLS), ("Metro", METRO_COLS)]:
-        present = [c for c in cols if c in d.columns]
-        if not present:
-            totals[label] = 0.0
-            continue
-
-        # Convert each column to numeric safely, then sum all values
-        numeric_block = d[present].apply(pd.to_numeric, errors="coerce")
-        totals[label] = float(numeric_block.to_numpy(dtype=float, na_value=np.nan).sum())
-
-    total_all = float(sum(totals.values()))
-    if not np.isfinite(total_all) or total_all <= 0:
+    total_all = bus_total + tram_total + metro_total
+    if total_all <= 0:
         return {"Bus": 0.0, "Tram": 0.0, "Metro": 0.0}
 
-    return {k: (v / total_all) * 100.0 for k, v in totals.items()}
+    return {
+        "Bus": bus_total / total_all * 100.0,
+        "Tram": tram_total / total_all * 100.0,
+        "Metro": metro_total / total_all * 100.0,
+    }
 
 
-
+@st.cache_data(show_spinner=False)
 def compute_mode_shares_2022(df2022: pd.DataFrame) -> Dict[str, float]:
     d = df2022.copy()
     if "Mode" not in d.columns:
         return {"Bus": 0.0, "Tram": 0.0, "Metro": 0.0}
+
+    d["Mode"] = d["Mode"].astype(str).str.strip().str.title()
     shares = d["Mode"].value_counts(normalize=True) * 100.0
     return {
         "Bus": float(shares.get("Bus", 0.0)),
@@ -329,477 +542,171 @@ def compute_mode_shares_2022(df2022: pd.DataFrame) -> Dict[str, float]:
     }
 
 
+@st.cache_data(show_spinner=False)
 def compute_season_percentages_2022(df2022: pd.DataFrame) -> Dict[str, float]:
     d = df2022.copy()
-
-    dt_col = None
-    for c in d.columns:
-        if c.lower().strip() in {"date and time", "datetime", "date_time", "timestamp"}:
-            dt_col = c
-            break
+    dt_col = detect_datetime_col_2022(d)
     if dt_col is None:
-        for c in d.columns:
-            if "date" in c.lower() and "time" in c.lower():
-                dt_col = c
-                break
-    if dt_col is None:
-        return {"Spring": float("nan"), "Summer": float("nan"), "Autumn": float("nan")}
+        return {"Spring": np.nan, "Summer": np.nan, "Autumn": np.nan, "Winter": np.nan}
 
     d[dt_col] = pd.to_datetime(d[dt_col], errors="coerce")
     d = d.dropna(subset=[dt_col]).copy()
-    if len(d) == 0:
-        return {"Spring": float("nan"), "Summer": float("nan"), "Autumn": float("nan")}
+    if d.empty:
+        return {"Spring": np.nan, "Summer": np.nan, "Autumn": np.nan, "Winter": np.nan}
 
     d["Month"] = d[dt_col].dt.month
     total = len(d)
-    spring = int(d[d["Month"].isin([3, 4, 5])].shape[0])
-    summer = int(d[d["Month"].isin([6, 7, 8])].shape[0])
-    autumn = int(d[d["Month"].isin([9, 10, 11])].shape[0])
+
     return {
-        "Spring": (spring / total) * 100.0,
-        "Summer": (summer / total) * 100.0,
-        "Autumn": (autumn / total) * 100.0,
+        "Spring": float(d["Month"].isin([3, 4, 5]).mean() * 100.0),
+        "Summer": float(d["Month"].isin([6, 7, 8]).mean() * 100.0),
+        "Autumn": float(d["Month"].isin([9, 10, 11]).mean() * 100.0),
+        "Winter": float(d["Month"].isin([12, 1, 2]).mean() * 100.0),
     }
 
 
-def fit_metro_price_distance(df2022: pd.DataFrame) -> Optional[Dict[str, float]]:
+def metro_frame(df2022: pd.DataFrame) -> pd.DataFrame:
     d = df2022.copy()
     needed = {"Mode", "Distance", "Price"}
     if not needed.issubset(set(d.columns)):
-        return None
+        return pd.DataFrame(columns=["Distance", "Price"])
 
-    metro = d[d["Mode"] == "Metro"].copy()
-    if len(metro) < 30:
-        return None
-
-    metro["Distance"] = pd.to_numeric(metro["Distance"], errors="coerce")
-    metro["Price"] = pd.to_numeric(metro["Price"], errors="coerce")
-    metro = metro.dropna(subset=["Distance", "Price"])
-    if len(metro) < 30:
-        return None
-
-    X = metro["Distance"].values.reshape(-1, 1)
-    y = metro["Price"].values
-    model = LinearRegression()
-    model.fit(X, y)
-    return {"slope": float(model.coef_[0]), "intercept": float(model.intercept_), "n": int(len(metro))}
-
-
-# ----------------------------
-# Plot helpers
-# ----------------------------
-def plot_daily_trends(d2019: pd.DataFrame, d2022: pd.DataFrame, n_terms: int) -> None:
-    import matplotlib.pyplot as plt
-    from matplotlib.ticker import FuncFormatter
-
-    y2019 = d2019["Total passengers"].to_numpy(dtype=float)
-    y2022 = d2022["Total passengers"].to_numpy(dtype=float)
-    x2019 = np.arange(1, len(y2019) + 1)
-    x2022 = np.arange(1, len(y2022) + 1)
-
-    y2019_s = fourier_smooth(y2019, n_terms=n_terms)
-    y2022_s = fourier_smooth(y2022, n_terms=n_terms)
-
-    fig = plt.figure(figsize=(12, 6))
-    ax = plt.gca()
-    ax.ticklabel_format(style="plain", axis="y")
-    ax.yaxis.set_major_formatter(FuncFormatter(lambda x, _: f"{x:,.0f}"))
-
-    ax.scatter(x2019, y2019, s=22, alpha=0.6, label="2019", marker="o")
-    ax.scatter(x2022, y2022, s=22, alpha=0.6, label="2022", marker="x")
-
-    ax.plot(x2019, y2019_s, linewidth=2.5, label="2019 (Fourier)")
-    ax.plot(x2022, y2022_s, linewidth=2.5, label="2022 (Fourier)")
-
-    ax.set_xlabel("Day index within dataset")
-    ax.set_ylabel("Total daily passengers")
-    ax.set_title("Daily public transport passengers (2019 vs 2022)")
-    ax.grid(True, linestyle="--", alpha=0.25)
-    ax.legend(loc="upper center", ncol=4, frameon=True, edgecolor="black")
-
-    st.pyplot(fig, clear_figure=True)
-
-
-def plot_weekday_bars(avg2019: pd.Series, avg2022: pd.Series, seasonal: Dict[str, float]) -> None:
-    import matplotlib.pyplot as plt
-    from matplotlib.ticker import FuncFormatter
-
-    fig = plt.figure(figsize=(12, 6))
-    x = np.arange(len(WEEKDAY_ORDER))
-    width = 0.35
-
-    plt.bar(x - width / 2, avg2019.values, width, label="2019", edgecolor="black")
-    plt.bar(x + width / 2, avg2022.values, width, label="2022", edgecolor="black")
-
-    plt.xticks(x, WEEKDAY_ORDER)
-    plt.xlabel("Day of week")
-    plt.ylabel("Average daily passengers")
-    plt.title("Average daily passengers by day of week (2019 vs 2022)")
-
-    ax = plt.gca()
-    ax.ticklabel_format(style="plain", axis="y")
-    ax.yaxis.set_major_formatter(FuncFormatter(lambda v, _: f"{int(v):,}"))
-
-    plt.legend(frameon=True, edgecolor="black")
-
-    # Seasonal box (Spring/Summer/Autumn)
-    text_box = (
-        f"Spring share: {seasonal.get('Spring', float('nan')):.2f}%\n"
-        f"Summer share: {seasonal.get('Summer', float('nan')):.2f}%\n"
-        f"Autumn share: {seasonal.get('Autumn', float('nan')):.2f}%"
-    )
-    plt.text(
-        0.72, 0.80, text_box,
-        transform=ax.transAxes,
-        fontsize=12,
-        bbox=dict(facecolor="white", edgecolor="black", alpha=0.85),
-    )
-
-    plt.tight_layout()
-    st.pyplot(fig, clear_figure=True)
-
-
-def plot_price_distance(df2022: pd.DataFrame) -> None:
-    import matplotlib.pyplot as plt
-
-    if not {"Mode", "Distance", "Price"}.issubset(set(df2022.columns)):
-        st.info("Price vs distance requires Mode, Distance, and Price columns in the 2022 dataset.")
-        return
-
-    d = df2022[df2022["Mode"] == "Metro"].copy()
+    d["Mode"] = d["Mode"].astype(str).str.strip().str.title()
     d["Distance"] = pd.to_numeric(d["Distance"], errors="coerce")
     d["Price"] = pd.to_numeric(d["Price"], errors="coerce")
-    d = d.dropna(subset=["Distance", "Price"])
-    if len(d) < 30:
-        st.info("Not enough Metro rows to fit a stable line.")
-        return
+    d = d[d["Mode"] == "Metro"].dropna(subset=["Distance", "Price"]).copy()
+    return d
 
-    X = d["Distance"].values.reshape(-1, 1)
-    y = d["Price"].values
+
+@st.cache_resource(show_spinner=False)
+def fit_metro_model(df2022: pd.DataFrame, seed: int = 42) -> Optional[Dict]:
+    metro = metro_frame(df2022)
+    if len(metro) < 30:
+        return None
+
+    x = metro[["Distance"]].copy()
+    y = metro["Price"].copy()
+
+    x_train, x_test, y_train, y_test = train_test_split(
+        x, y, test_size=0.25, random_state=int(seed)
+    )
 
     model = LinearRegression()
-    model.fit(X, y)
-    a = float(model.coef_[0])
-    b = float(model.intercept_)
+    model.fit(x_train, y_train)
 
-    x_line = np.linspace(float(X.min()), float(X.max()), 150).reshape(-1, 1)
-    y_line = model.predict(x_line)
+    pred_train = model.predict(x_train)
+    pred_test = model.predict(x_test)
 
-    fig = plt.figure(figsize=(12, 6))
-    plt.scatter(d["Distance"], d["Price"], s=18, alpha=0.6, label="Metro journeys", marker="x")
-    plt.plot(x_line.ravel(), y_line, linewidth=2.5, label="Linear fit")
+    full_line_x = np.linspace(float(x["Distance"].min()), float(x["Distance"].max()), 200)
+    full_line_y = model.predict(full_line_x.reshape(-1, 1))
 
-    plt.xlabel("Trip length (km)")
-    plt.ylabel("Price")
-    plt.title("Price vs trip length for 2022 Metro journeys")
-    plt.legend(frameon=True, edgecolor="black", loc="upper left")
-
-    plt.text(
-        0.50, 0.15,
-        f"Fit: Price = {a:.3f} × Distance + {b:.3f}",
-        transform=plt.gca().transAxes,
-        fontsize=12,
-        ha="center",
-        va="center",
-        bbox=dict(facecolor="white", edgecolor="black", alpha=0.90),
-    )
-
-    plt.tight_layout()
-    st.pyplot(fig, clear_figure=True)
-
-
-def plot_mode_shares(sh2019: Dict[str, float], sh2022: Dict[str, float]) -> None:
-    import matplotlib.pyplot as plt
-
-    labels = ["Bus", "Tram", "Metro"]
-    vals2019 = [float(sh2019.get(k, 0.0)) for k in labels]
-    vals2022 = [float(sh2022.get(k, 0.0)) for k in labels]
-
-    x = np.arange(len(labels))
-    width = 0.35
-
-    fig = plt.figure(figsize=(12, 6))
-    plt.bar(x - width / 2, vals2019, width, label="2019", edgecolor="black")
-    plt.bar(x + width / 2, vals2022, width, label="2022", edgecolor="black")
-
-    plt.xlabel("Mode of transport")
-    plt.ylabel("Percentage of journeys (%)")
-    plt.title("Fraction of journeys by transport mode (2019 vs 2022)")
-    plt.xticks(x, labels)
-    plt.legend(frameon=True, edgecolor="black")
-    plt.tight_layout()
-    st.pyplot(fig, clear_figure=True)
+    result = {
+        "model": model,
+        "metro": metro,
+        "x_train": x_train,
+        "x_test": x_test,
+        "y_train": y_train,
+        "y_test": y_test,
+        "pred_train": pred_train,
+        "pred_test": pred_test,
+        "slope": float(model.coef_[0]),
+        "intercept": float(model.intercept_),
+        "train_mae": float(mean_absolute_error(y_train, pred_train)),
+        "test_mae": float(mean_absolute_error(y_test, pred_test)),
+        "train_r2": float(r2_score(y_train, pred_train)),
+        "test_r2": float(r2_score(y_test, pred_test)),
+        "line_x": full_line_x,
+        "line_y": full_line_y,
+        "n": int(len(metro)),
+    }
+    return result
 
 
-# ----------------------------
-# Pages
-# ----------------------------
-def page_summary(d2019: pd.DataFrame, d2022_daily: pd.DataFrame, meta: DataMeta, expansion_factor: float) -> None:
-    st.title("Public Transport Trend Dashboard")
-    st.caption(f"2019 source: {meta.source_2019} | 2022 source: {meta.source_2022}")
-
-    # KPI cards (ONLY here)
-    tot2019 = float(pd.to_numeric(d2019["Total passengers"], errors="coerce").sum())
-    tot2022 = float(pd.to_numeric(d2022_daily["Total passengers"], errors="coerce").sum())
-    mean2019 = float(pd.to_numeric(d2019["Total passengers"], errors="coerce").mean())
-    mean2022 = float(pd.to_numeric(d2022_daily["Total passengers"], errors="coerce").mean())
-
-    kpis_html = f"""
-    <div class="kpi-grid">
-      {kpi_card("2019 days", f"{len(d2019):,}", "Daily totals computed")}
-      {kpi_card("2022 days", f"{len(d2022_daily):,}", "Expanded from sample")}
-      {kpi_card("Total passengers (2019)", f"{tot2019:,.0f}", f"Average per day: {mean2019:,.0f}")}
-      {kpi_card("Expansion factor (2022)", f"{expansion_factor:,.3f}", f"Average per day: {mean2022:,.0f}")}
-    </div>
-    """
-    st.markdown(kpis_html, unsafe_allow_html=True)
-
-    st.write("")
-    c1, c2 = st.columns([1.2, 1.0], gap="large")
-    with c1:
-        card(
-            "What this dashboard does",
-            """
-            • Computes total daily passengers for 2019 using Bus/Tram/Metro peak and off-peak counts.<br>
-            • Converts 2022 trip-level records into daily sample counts, then scales them using a configurable annual total.<br>
-            • Visualises daily trends, day-of-week patterns, mode share differences, and metro fare-distance behaviour.
-            """.strip(),
-        )
-    with c2:
-        card(
-            "Data health checks",
-            f"""
-            • 2019 missing totals: {int(d2019["Total passengers"].isna().sum()):,}<br>
-            • 2022 missing totals: {int(d2022_daily["Total passengers"].isna().sum()):,}<br>
-            • 2022 expansion is based on sample size and the annual total you set in the sidebar
-            """.strip(),
-        )
-
-
-def page_daily_trends(d2019: pd.DataFrame, d2022: pd.DataFrame) -> None:
-    st.title("Daily Trends")
-    st.caption("Compare daily passenger totals with optional Fourier smoothing.")
-
-    st.markdown('<div class="card"><h3>Controls</h3>', unsafe_allow_html=True)
-    n_terms = st.slider("Fourier smoothing terms", min_value=0, max_value=30, value=8, step=1)
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    st.write("")
-    st.markdown('<div class="card"><h3>Daily totals (2019 vs 2022)</h3>', unsafe_allow_html=True)
-    plot_daily_trends(d2019, d2022, n_terms=n_terms)
-    st.markdown("</div>", unsafe_allow_html=True)
-
-
-def page_weekday_patterns(d2019: pd.DataFrame, d2022: pd.DataFrame, seasonal: Dict[str, float]) -> None:
-    st.title("Day-of-Week Patterns")
-    st.caption("Compare average passenger totals across weekdays for 2019 and 2022.")
-
-    avg2019 = d2019.groupby("Day")["Total passengers"].mean().reindex(WEEKDAY_ORDER)
-    avg2022 = d2022.groupby("Day")["Total passengers"].mean().reindex(WEEKDAY_ORDER)
-
-    st.markdown('<div class="card"><h3>Average daily passengers by weekday</h3>', unsafe_allow_html=True)
-    plot_weekday_bars(avg2019, avg2022, seasonal=seasonal)
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    st.write("")
-    st.markdown('<div class="card"><h3>Weekday table</h3>', unsafe_allow_html=True)
-    table = pd.DataFrame({"2019": avg2019.values, "2022": avg2022.values}, index=WEEKDAY_ORDER)
-    table = table.reset_index().rename(columns={"index": "Day"})
-    st.dataframe(table, use_container_width=True, hide_index=True)
-    st.markdown("</div>", unsafe_allow_html=True)
-
-
-def page_price_distance(df2022_raw: pd.DataFrame) -> None:
-    st.title("Metro Price vs Distance")
-    st.caption("Fit a linear model to 2022 Metro journeys (Price vs Distance).")
-
-    st.markdown('<div class="card"><h3>Scatter and fitted line</h3>', unsafe_allow_html=True)
-    plot_price_distance(df2022_raw)
-    st.markdown("</div>", unsafe_allow_html=True)
-
-
-def page_mode_share(d2019_daily: pd.DataFrame, df2022_raw: pd.DataFrame) -> None:
-    st.title("Mode Share Comparison")
-    st.caption("Compare mode shares between 2019 passenger totals and 2022 trip proportions.")
-
-    sh2019 = compute_mode_shares_2019(d2019_daily)
-    sh2022 = compute_mode_shares_2022(df2022_raw)
-
-    st.markdown('<div class="card"><h3>Mode share chart</h3>', unsafe_allow_html=True)
-    plot_mode_shares(sh2019, sh2022)
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    st.write("")
-    st.markdown('<div class="card"><h3>Mode share table</h3>', unsafe_allow_html=True)
-    table = pd.DataFrame(
-        {
-            "Mode": ["Bus", "Tram", "Metro"],
-            "2019 share (%)": [sh2019["Bus"], sh2019["Tram"], sh2019["Metro"]],
-            "2022 share (%)": [sh2022["Bus"], sh2022["Tram"], sh2022["Metro"]],
-        }
-    )
-    st.dataframe(table, use_container_width=True, hide_index=True)
-    st.markdown("</div>", unsafe_allow_html=True)
-
-
-def page_insights(
+def build_data_driven_insights(
     d2019_daily: pd.DataFrame,
     d2022_daily: pd.DataFrame,
     df2022_raw: pd.DataFrame,
-    seasonal: Dict[str, float],
-) -> None:
-    st.title("Insights")
-    st.caption("Key findings based on observed data patterns and model behavior.")
+) -> List[str]:
+    insights: List[str] = []
 
-    # 1) Data-driven insights
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.header("1. Data-driven insights")
+    total_2019 = float(d2019_daily["Total passengers"].sum())
+    total_2022 = float(d2022_daily["Total passengers"].sum())
+    avg_2019 = float(d2019_daily["Total passengers"].mean())
+    avg_2022 = float(d2022_daily["Total passengers"].mean())
 
-    tot2019 = float(d2019_daily["Total passengers"].sum())
-    tot2022 = float(d2022_daily["Total passengers"].sum())
+    change_pct = safe_divide(avg_2022 - avg_2019, avg_2019)
+    insights.append(
+        f"Average daily passenger volume is {fmt_number(avg_2019, 0)} in 2019 versus an estimated {fmt_number(avg_2022, 0)} in 2022, a change of {fmt_pct(change_pct)}."
+    )
 
-    avg2019 = float(d2019_daily["Total passengers"].mean())
-    avg2022 = float(d2022_daily["Total passengers"].mean())
+    peak_day_2019 = weekday_profile(d2019_daily).idxmax()
+    peak_day_2022 = weekday_profile(d2022_daily).idxmax()
+    insights.append(
+        f"The busiest weekday changes from {peak_day_2019} in 2019 to {peak_day_2022} in 2022 based on average daily passengers."
+    )
 
-    st.write(f"Total passengers for 2019 (summed over available days): {tot2019:,.0f}.")
-    st.write(f"Total passengers for 2022 (expanded estimate over available days): {tot2022:,.0f}.")
-    st.write(f"Average daily passengers: 2019 = {avg2019:,.0f}, 2022 = {avg2022:,.0f}.")
-
-    # Weekday contrast
-    wk2019 = d2019_daily.groupby("Day")["Total passengers"].mean().reindex(WEEKDAY_ORDER)
-    wk2022 = d2022_daily.groupby("Day")["Total passengers"].mean().reindex(WEEKDAY_ORDER)
-    if wk2019.notna().any() and wk2022.notna().any():
-        peak_day_2019 = wk2019.idxmax()
-        peak_day_2022 = wk2022.idxmax()
-        st.write(f"Peak weekday by average passengers: 2019 = {peak_day_2019}, 2022 = {peak_day_2022}.")
-
-    # Seasonal composition (from 2022 trips)
-    if all(np.isfinite([seasonal.get("Spring", np.nan), seasonal.get("Summer", np.nan), seasonal.get("Autumn", np.nan)])):
-        st.write(
-            f"2022 seasonal composition of trips: Spring = {seasonal['Spring']:.2f}%, "
-            f"Summer = {seasonal['Summer']:.2f}%, Autumn = {seasonal['Autumn']:.2f}%."
+    month_2019 = month_profile(d2019_daily)
+    month_2022 = month_profile(d2022_daily)
+    if month_2019.notna().any() and month_2022.notna().any():
+        peak_month_2019 = MONTH_LABELS[int(month_2019.idxmax())]
+        peak_month_2022 = MONTH_LABELS[int(month_2022.idxmax())]
+        insights.append(
+            f"Seasonality remains visible, with the strongest monthly average appearing in {peak_month_2019} for 2019 and {peak_month_2022} for 2022."
         )
 
-    # Mode shares
     sh2019 = compute_mode_shares_2019(d2019_daily)
     sh2022 = compute_mode_shares_2022(df2022_raw)
-    st.write(
-        "Mode shares differ between 2019 passenger totals and 2022 trip proportions. "
-        "This highlights changes in usage mix and/or how each dataset represents demand."
+    biggest_gap_mode = max(
+        ["Bus", "Tram", "Metro"],
+        key=lambda m: abs(sh2022.get(m, 0.0) - sh2019.get(m, 0.0))
     )
-    st.dataframe(
-        pd.DataFrame(
-            {
-                "Mode": ["Bus", "Tram", "Metro"],
-                "2019 share (%)": [sh2019["Bus"], sh2019["Tram"], sh2019["Metro"]],
-                "2022 share (%)": [sh2022["Bus"], sh2022["Tram"], sh2022["Metro"]],
-            }
-        ),
-        use_container_width=True,
-        hide_index=True,
+    insights.append(
+        f"The largest mode-share difference between the two datasets appears in {biggest_gap_mode}, indicating a meaningful usage mix shift between 2019 totals and 2022 trip proportions."
     )
 
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    st.write("")
-
-    # 2) Model-driven insights
-    st.markdown('<div class="card">', unsafe_allow_html=True)
-    st.header("2. Model-driven insights")
-
-    # Fourier smoothing choice impact (simple model-ish tradeoff)
-    st.subheader("Smoothing sensitivity")
-    terms = st.slider("Smoothing terms for comparison", 0, 30, 8, 1, key="ins_terms")
-    y2019 = d2019_daily["Total passengers"].to_numpy(dtype=float)
-    y2022 = d2022_daily["Total passengers"].to_numpy(dtype=float)
-    y2019_s = fourier_smooth(y2019, n_terms=terms)
-    y2022_s = fourier_smooth(y2022, n_terms=terms)
-
-    # Define a simple volatility metric: mean absolute day-to-day change (smoothed vs raw)
-    def mad_change(arr: np.ndarray) -> float:
-        if len(arr) < 2:
-            return float("nan")
-        return float(np.nanmean(np.abs(np.diff(arr))))
-
-    raw_vol_2019 = mad_change(y2019)
-    sm_vol_2019 = mad_change(y2019_s)
-    raw_vol_2022 = mad_change(y2022)
-    sm_vol_2022 = mad_change(y2022_s)
-
-    st.write(
-        "Fourier smoothing reduces short-term fluctuations. "
-        "Higher term counts preserve more variation, while lower term counts emphasise long-run seasonality."
-    )
-    st.dataframe(
-        pd.DataFrame(
-            [
-                ["2019", raw_vol_2019, sm_vol_2019],
-                ["2022", raw_vol_2022, sm_vol_2022],
-            ],
-            columns=["Dataset", "Raw mean absolute daily change", "Smoothed mean absolute daily change"],
-        ),
-        use_container_width=True,
-        hide_index=True,
-    )
-
-    # Fare model for Metro
-    st.subheader("Fare-distance relationship for Metro journeys")
-    fit = fit_metro_price_distance(df2022_raw)
-    if fit is None:
-        st.write("A stable metro fare-distance fit is not available due to missing columns or insufficient Metro rows.")
-    else:
-        st.write(
-            f"Linear fit on {fit['n']:,} Metro journeys: "
-            f"Price = {fit['slope']:.3f} × Distance + {fit['intercept']:.3f}."
-        )
-        st.write(
-            "The slope approximates how much price increases per additional kilometre. "
-            "The intercept approximates the base fare component at very short distances."
+    seasonal = compute_season_percentages_2022(df2022_raw)
+    seasonal_rank = pd.Series(
+        {"Spring": seasonal["Spring"], "Summer": seasonal["Summer"], "Autumn": seasonal["Autumn"], "Winter": seasonal["Winter"]}
+    ).sort_values(ascending=False)
+    if seasonal_rank.notna().any():
+        insights.append(
+            f"In the 2022 sample, {seasonal_rank.index[0]} contributes the largest share of observed trips."
         )
 
-    st.markdown("</div>", unsafe_allow_html=True)
-
-
-def page_data(df2019_raw: pd.DataFrame, df2022_raw: pd.DataFrame) -> None:
-    st.title("Data")
-    st.caption("Inspect raw inputs used for the analysis.")
-
-    st.markdown('<div class="card"><h3>2019 raw preview</h3>', unsafe_allow_html=True)
-    st.dataframe(df2019_raw.head(200), use_container_width=True, hide_index=True)
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    st.write("")
-    st.markdown('<div class="card"><h3>2022 raw preview</h3>', unsafe_allow_html=True)
-    st.dataframe(df2022_raw.head(200), use_container_width=True, hide_index=True)
-    st.markdown("</div>", unsafe_allow_html=True)
-
-
-# ----------------------------
-# App
-# ----------------------------
-def main() -> None:
-    st.set_page_config(page_title="Public Transport Trends", layout="wide", initial_sidebar_state="expanded")
-    inject_css()
-
-    st.sidebar.title("Navigation")
-    page = st.sidebar.radio(
-        "Go to",
-        ["Summary", "Daily Trends", "Day-of-Week", "Metro Price vs Distance", "Mode Share", "Insights", "Data"],
-        index=0,
+    insights.append(
+        f"Across the available days, cumulative passenger volume equals {fmt_number(total_2019, 0)} in 2019 and an estimated {fmt_number(total_2022, 0)} in 2022 after sample expansion."
     )
 
-    st.sidebar.write("")
-    st.sidebar.subheader("Data loading")
+    return insights[:6]
 
-    use_up_2019 = st.sidebar.toggle("Use uploaded 2019 file instead of default", value=False)
-    up_2019 = st.sidebar.file_uploader("Upload 2019 CSV", type=["csv"], key="up2019")
 
-    use_up_2022 = st.sidebar.toggle("Use uploaded 2022 file instead of default", value=False)
-    up_2022 = st.sidebar.file_uploader("Upload 2022 CSV", type=["csv"], key="up2022")
+def build_model_driven_insights(model_artifacts: Optional[Dict], scenario_distance: float) -> List[str]:
+    if model_artifacts is None:
+        return ["A stable Metro fare model is not available because the 2022 data does not contain enough valid Metro rows with both Distance and Price."]
 
-    st.sidebar.write("")
-    st.sidebar.subheader("2022 scaling")
-    total_annual = st.sidebar.number_input(
+    pred_price = float(model_artifacts["model"].predict(np.array([[scenario_distance]]))[0])
+
+    return [
+        f"The Metro fare model estimates a slope of {model_artifacts['slope']:.3f}, meaning price increases by roughly {model_artifacts['slope']:.3f} units for each extra kilometre.",
+        f"Holdout performance reaches test MAE {model_artifacts['test_mae']:.3f} and test R² {model_artifacts['test_r2']:.3f}.",
+        f"The intercept is {model_artifacts['intercept']:.3f}, representing the fitted base component for very short trips.",
+        f"For a scenario distance of {scenario_distance:.1f} km, the model predicts a Metro fare of {pred_price:.2f}.",
+    ]
+
+
+# =========================================================
+# Sidebar inputs
+# =========================================================
+with st.sidebar:
+    st.markdown("### Data loading")
+    use_up_2019 = st.toggle("Use uploaded 2019 file", value=False)
+    up_2019 = st.file_uploader("Upload 2019 CSV", type=["csv"], key="up2019", disabled=not use_up_2019)
+
+    use_up_2022 = st.toggle("Use uploaded 2022 file", value=False)
+    up_2022 = st.file_uploader("Upload 2022 CSV", type=["csv"], key="up2022", disabled=not use_up_2022)
+
+    st.markdown("### 2022 scaling")
+    total_annual = st.number_input(
         "Total annual passengers (2022)",
         min_value=1_000_000.0,
         max_value=10_000_000_000.0,
@@ -808,31 +715,543 @@ def main() -> None:
         help="Used to scale 2022 sample counts into estimated daily totals.",
     )
 
-    try:
-        df2019_raw, df2022_raw, meta = load_two_files(use_up_2019, up_2019, use_up_2022, up_2022)
-        d2019_daily = build_2019_daily(df2019_raw)
-        d2022_daily, expansion_factor = build_2022_daily_expanded(df2022_raw, total_annual_passengers=float(total_annual))
-        seasonal = compute_season_percentages_2022(df2022_raw)
-    except Exception as e:
-        st.error("Data could not be loaded or processed.")
-        st.write(str(e))
-        return
-
-    if page == "Summary":
-        page_summary(d2019_daily, d2022_daily, meta, expansion_factor)
-    elif page == "Daily Trends":
-        page_daily_trends(d2019_daily, d2022_daily)
-    elif page == "Day-of-Week":
-        page_weekday_patterns(d2019_daily, d2022_daily, seasonal)
-    elif page == "Metro Price vs Distance":
-        page_price_distance(df2022_raw)
-    elif page == "Mode Share":
-        page_mode_share(d2019_daily, df2022_raw)
-    elif page == "Insights":
-        page_insights(d2019_daily, d2022_daily, df2022_raw, seasonal)
-    elif page == "Data":
-        page_data(df2019_raw, df2022_raw)
+    st.markdown("### Analysis controls")
+    smoothing_terms = st.slider("Fourier smoothing terms", min_value=0, max_value=30, value=8, step=1)
+    metro_scenario_distance = st.slider("Metro fare scenario distance (km)", min_value=0.5, max_value=60.0, value=10.0, step=0.5)
+    random_seed = st.number_input("Random seed", min_value=0, max_value=9999, value=42, step=1)
 
 
-if __name__ == "__main__":
-    main()
+# =========================================================
+# Load and prepare data
+# =========================================================
+try:
+    df2019_raw, df2022_raw, meta = load_two_files(
+        use_upload_2019=use_up_2019,
+        upload_2019_bytes=up_2019.getvalue() if up_2019 is not None else None,
+        upload_2019_name=up_2019.name if up_2019 is not None else None,
+        use_upload_2022=use_up_2022,
+        upload_2022_bytes=up_2022.getvalue() if up_2022 is not None else None,
+        upload_2022_name=up_2022.name if up_2022 is not None else None,
+    )
+
+    d2019_daily = build_2019_daily(df2019_raw)
+    df2022_clean = clean_2022_raw(df2022_raw)
+    d2022_daily, expansion_factor = build_2022_daily_expanded(
+        df2022_clean,
+        total_annual_passengers=float(total_annual),
+    )
+    metro_artifacts = fit_metro_model(df2022_clean, seed=int(random_seed))
+except Exception as e:
+    st.error("The data could not be loaded or prepared.")
+    st.write(str(e))
+    st.stop()
+
+
+# =========================================================
+# Hero and KPIs
+# =========================================================
+hero_text = (
+    "This dashboard compares 2019 observed public-transport demand with a 2022 demand estimate built "
+    "from sampled trip records and an annual scaling assumption. It focuses on demand level changes, "
+    "weekday and seasonal shifts, mode composition, and Metro fare behaviour."
+)
+
+scope_text = (
+    f"2019 source: {meta.source_2019} | 2022 source: {meta.source_2022} | "
+    f"2022 expansion factor: {fmt_number(expansion_factor, 3)}"
+)
+
+st.markdown(
+    f"""
+    <div class="hero">
+      <div class="hero-title">Public Transport Demand Intelligence Dashboard</div>
+      <p class="hero-sub">{esc(hero_text)}</p>
+      <div class="hero-strip">{esc(scope_text)}</div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+avg_2019 = float(d2019_daily["Total passengers"].mean())
+avg_2022 = float(d2022_daily["Total passengers"].mean())
+change_pct = safe_divide(avg_2022 - avg_2019, avg_2019)
+
+mode_2019 = compute_mode_shares_2019(d2019_daily)
+mode_2022 = compute_mode_shares_2022(df2022_clean)
+
+render_kpis(
+    [
+        ("Average daily passengers (2019)", fmt_number(avg_2019, 0), "Observed daily total from Bus, Tram, and Metro counts"),
+        ("Average daily passengers (2022)", fmt_number(avg_2022, 0), "Estimated daily total after sample expansion"),
+        ("Estimated daily change", fmt_pct(change_pct), "Change in average daily passengers from 2019 to 2022"),
+        ("Largest 2019 mode", max(mode_2019, key=mode_2019.get), f"{fmt_pct(mode_2019[max(mode_2019, key=mode_2019.get)] / 100)} of 2019 passenger totals"),
+        ("Largest 2022 mode", max(mode_2022, key=mode_2022.get), f"{fmt_pct(mode_2022[max(mode_2022, key=mode_2022.get)] / 100)} of 2022 trip records"),
+        ("Metro fare slope", f"{metro_artifacts['slope']:.3f}" if metro_artifacts else "N/A", "Estimated fare increase per kilometre for Metro journeys"),
+    ]
+)
+
+
+# =========================================================
+# Tabs
+# =========================================================
+tab1, tab2, tab3, tab4, tab5 = st.tabs(
+    [
+        "Executive summary",
+        "Demand patterns",
+        "Mode and seasonality",
+        "Metro fare analytics",
+        "Data appendix",
+    ]
+)
+
+
+# =========================================================
+# Executive summary
+# =========================================================
+with tab1:
+    left, right = st.columns([1.1, 0.9], gap="large")
+
+    with left:
+        render_list_card(
+            "1. Data-driven insights",
+            build_data_driven_insights(d2019_daily, d2022_daily, df2022_clean),
+            "Passenger volume, seasonality, weekday effects, and mode composition based on the loaded datasets.",
+        )
+
+        st.write("")
+        render_section_title("Smoothed daily passenger comparison")
+
+        daily_plot = pd.DataFrame(
+            {
+                "Day index": d2019_daily["Day index"],
+                "2019 smoothed": fourier_smooth(d2019_daily["Total passengers"].to_numpy(dtype=float), smoothing_terms),
+            }
+        )
+        daily_plot_2 = pd.DataFrame(
+            {
+                "Day index": d2022_daily["Day index"],
+                "2022 smoothed": fourier_smooth(d2022_daily["Total passengers"].to_numpy(dtype=float), smoothing_terms),
+            }
+        )
+
+        fig = go.Figure()
+        fig.add_trace(
+            go.Scatter(
+                x=daily_plot["Day index"],
+                y=daily_plot["2019 smoothed"],
+                mode="lines",
+                name="2019 smoothed",
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=daily_plot_2["Day index"],
+                y=daily_plot_2["2022 smoothed"],
+                mode="lines",
+                name="2022 smoothed",
+            )
+        )
+        fig.update_layout(
+            height=420,
+            margin=dict(l=10, r=10, t=20, b=10),
+            xaxis_title="Day index within dataset",
+            yaxis_title="Daily passengers",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    with right:
+        render_list_card(
+            "2. Model-driven insights",
+            build_model_driven_insights(metro_artifacts, metro_scenario_distance),
+            "Metro fare behaviour from the linear regression layer, used as the model-driven complement to the demand analysis.",
+        )
+
+        st.write("")
+        render_section_title("Weekday comparison")
+        weekday_df = pd.DataFrame(
+            {
+                "Day": WEEKDAY_ORDER,
+                "2019": weekday_profile(d2019_daily).values,
+                "2022": weekday_profile(d2022_daily).values,
+            }
+        ).melt(id_vars="Day", var_name="Dataset", value_name="Average daily passengers")
+
+        fig = px.bar(
+            weekday_df,
+            x="Day",
+            y="Average daily passengers",
+            color="Dataset",
+            barmode="group",
+            category_orders={"Day": WEEKDAY_ORDER},
+        )
+        fig.update_layout(
+            height=420,
+            margin=dict(l=10, r=10, t=20, b=10),
+            xaxis_title="Day of week",
+            yaxis_title="Average daily passengers",
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+
+# =========================================================
+# Demand patterns
+# =========================================================
+with tab2:
+    render_section_title("Daily demand profile")
+    show_raw = st.toggle("Show raw daily series", value=False)
+
+    fig = go.Figure()
+
+    if show_raw:
+        fig.add_trace(
+            go.Scatter(
+                x=d2019_daily["Day index"],
+                y=d2019_daily["Total passengers"],
+                mode="lines",
+                name="2019 raw",
+                line=dict(width=1),
+                opacity=0.35,
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=d2022_daily["Day index"],
+                y=d2022_daily["Total passengers"],
+                mode="lines",
+                name="2022 raw",
+                line=dict(width=1),
+                opacity=0.35,
+            )
+        )
+
+    fig.add_trace(
+        go.Scatter(
+            x=d2019_daily["Day index"],
+            y=fourier_smooth(d2019_daily["Total passengers"].to_numpy(dtype=float), smoothing_terms),
+            mode="lines",
+            name="2019 smoothed",
+            line=dict(width=3),
+        )
+    )
+    fig.add_trace(
+        go.Scatter(
+            x=d2022_daily["Day index"],
+            y=fourier_smooth(d2022_daily["Total passengers"].to_numpy(dtype=float), smoothing_terms),
+            mode="lines",
+            name="2022 smoothed",
+            line=dict(width=3),
+        )
+    )
+
+    fig.update_layout(
+        height=460,
+        margin=dict(l=10, r=10, t=20, b=10),
+        xaxis_title="Day index within dataset",
+        yaxis_title="Daily passengers",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.write("")
+    c1, c2 = st.columns([1.0, 1.0], gap="large")
+
+    with c1:
+        render_section_title("Monthly average comparison")
+        monthly_df = pd.DataFrame(
+            {
+                "Month": MONTH_ORDER,
+                "2019": month_profile(d2019_daily).values,
+                "2022": month_profile(d2022_daily).values,
+            }
+        ).melt(id_vars="Month", var_name="Dataset", value_name="Average daily passengers")
+        monthly_df["Month label"] = monthly_df["Month"].map(MONTH_LABELS)
+
+        fig = px.line(
+            monthly_df,
+            x="Month",
+            y="Average daily passengers",
+            color="Dataset",
+            markers=True,
+        )
+        fig.update_layout(
+            height=380,
+            margin=dict(l=10, r=10, t=20, b=10),
+            xaxis=dict(
+                title="Month",
+                tickmode="array",
+                tickvals=MONTH_ORDER,
+                ticktext=[MONTH_LABELS[m] for m in MONTH_ORDER],
+            ),
+            yaxis_title="Average daily passengers",
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    with c2:
+        render_section_title("Demand distribution")
+        dist_df = pd.concat(
+            [
+                pd.DataFrame({"Dataset": "2019", "Daily passengers": d2019_daily["Total passengers"]}),
+                pd.DataFrame({"Dataset": "2022", "Daily passengers": d2022_daily["Total passengers"]}),
+            ],
+            ignore_index=True,
+        )
+        fig = px.box(
+            dist_df,
+            x="Dataset",
+            y="Daily passengers",
+            points="outliers",
+        )
+        fig.update_layout(
+            height=380,
+            margin=dict(l=10, r=10, t=20, b=10),
+            xaxis_title="Dataset",
+            yaxis_title="Daily passengers",
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+
+# =========================================================
+# Mode and seasonality
+# =========================================================
+with tab3:
+    c1, c2 = st.columns([1.0, 1.0], gap="large")
+
+    with c1:
+        render_section_title("Mode share comparison")
+        mode_df = pd.DataFrame(
+            {
+                "Mode": ["Bus", "Tram", "Metro"],
+                "2019": [mode_2019["Bus"], mode_2019["Tram"], mode_2019["Metro"]],
+                "2022": [mode_2022["Bus"], mode_2022["Tram"], mode_2022["Metro"]],
+            }
+        ).melt(id_vars="Mode", var_name="Dataset", value_name="Share")
+
+        fig = px.bar(
+            mode_df,
+            x="Mode",
+            y="Share",
+            color="Dataset",
+            barmode="group",
+            text_auto=".1f",
+        )
+        fig.update_layout(
+            height=380,
+            margin=dict(l=10, r=10, t=20, b=10),
+            xaxis_title="Mode",
+            yaxis_title="Share of journeys (%)",
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    with c2:
+        render_section_title("2022 seasonal composition")
+        seasonal = compute_season_percentages_2022(df2022_clean)
+        season_df = pd.DataFrame(
+            {
+                "Season": ["Spring", "Summer", "Autumn", "Winter"],
+                "Share": [seasonal["Spring"], seasonal["Summer"], seasonal["Autumn"], seasonal["Winter"]],
+            }
+        ).dropna()
+
+        fig = px.pie(
+            season_df,
+            names="Season",
+            values="Share",
+            hole=0.52,
+        )
+        fig.update_layout(
+            height=380,
+            margin=dict(l=10, r=10, t=20, b=10),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    st.write("")
+    render_section_title("Weekday shift from 2019 to 2022")
+    weekday_diff = pd.DataFrame(
+        {
+            "Day": WEEKDAY_ORDER,
+            "2019": weekday_profile(d2019_daily).values,
+            "2022": weekday_profile(d2022_daily).values,
+        }
+    )
+    weekday_diff["2022 minus 2019"] = weekday_diff["2022"] - weekday_diff["2019"]
+
+    fig = px.bar(
+        weekday_diff,
+        x="Day",
+        y="2022 minus 2019",
+        category_orders={"Day": WEEKDAY_ORDER},
+    )
+    fig.update_layout(
+        height=380,
+        margin=dict(l=10, r=10, t=20, b=10),
+        xaxis_title="Day of week",
+        yaxis_title="Passenger difference",
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    display_weekday = weekday_diff.copy()
+    display_weekday["2019"] = display_weekday["2019"].map(lambda x: fmt_number(x, 0))
+    display_weekday["2022"] = display_weekday["2022"].map(lambda x: fmt_number(x, 0))
+    display_weekday["2022 minus 2019"] = display_weekday["2022 minus 2019"].map(lambda x: fmt_number(x, 0))
+    st.dataframe(display_weekday, use_container_width=True, hide_index=True)
+
+
+# =========================================================
+# Metro fare analytics
+# =========================================================
+with tab4:
+    if metro_artifacts is None:
+        st.info("Metro fare analytics require a 2022 dataset with enough Metro rows containing both Distance and Price.")
+    else:
+        render_kpis(
+            [
+                ("Metro sample size", fmt_number(metro_artifacts["n"], 0), "Valid Metro journeys with Distance and Price"),
+                ("Slope", f"{metro_artifacts['slope']:.3f}", "Estimated fare increase per kilometre"),
+                ("Intercept", f"{metro_artifacts['intercept']:.3f}", "Estimated base component"),
+                ("Train MAE", f"{metro_artifacts['train_mae']:.3f}", "Average absolute training error"),
+                ("Test MAE", f"{metro_artifacts['test_mae']:.3f}", "Average absolute holdout error"),
+                ("Test R²", f"{metro_artifacts['test_r2']:.3f}", "Explained variance on the holdout split"),
+            ]
+        )
+
+        c1, c2 = st.columns([1.0, 1.0], gap="large")
+
+        with c1:
+            render_section_title("Observed Metro fares and fitted line")
+            scatter_df = metro_artifacts["metro"].copy()
+
+            fig = go.Figure()
+            fig.add_trace(
+                go.Scatter(
+                    x=scatter_df["Distance"],
+                    y=scatter_df["Price"],
+                    mode="markers",
+                    name="Observed Metro journeys",
+                )
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=metro_artifacts["line_x"],
+                    y=metro_artifacts["line_y"],
+                    mode="lines",
+                    name="Linear fit",
+                )
+            )
+            fig.update_layout(
+                height=400,
+                margin=dict(l=10, r=10, t=20, b=10),
+                xaxis_title="Trip distance (km)",
+                yaxis_title="Price",
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+        with c2:
+            render_section_title("Actual vs predicted holdout fares")
+            eval_df = pd.DataFrame(
+                {
+                    "Actual price": metro_artifacts["y_test"].to_numpy(),
+                    "Predicted price": metro_artifacts["pred_test"],
+                    "Distance": metro_artifacts["x_test"]["Distance"].to_numpy(),
+                }
+            )
+            fig = px.scatter(
+                eval_df,
+                x="Actual price",
+                y="Predicted price",
+                hover_data=["Distance"],
+            )
+            fig.update_layout(
+                height=400,
+                margin=dict(l=10, r=10, t=20, b=10),
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+        st.write("")
+        render_section_title("Metro fare scenario")
+        predicted_price = float(
+            metro_artifacts["model"].predict(np.array([[metro_scenario_distance]]))[0]
+        )
+
+        render_kpis(
+            [
+                ("Scenario distance", f"{metro_scenario_distance:.1f} km", "Input selected in the sidebar"),
+                ("Predicted Metro fare", f"{predicted_price:.2f}", "Linear model estimate"),
+                ("Model equation", f"{metro_artifacts['slope']:.3f} × distance + {metro_artifacts['intercept']:.3f}", "Regression form"),
+                ("Distance range in data", f"{metro_artifacts['metro']['Distance'].min():.1f} to {metro_artifacts['metro']['Distance'].max():.1f} km", "Observed range used for fitting"),
+                ("Median observed fare", f"{metro_artifacts['metro']['Price'].median():.2f}", "Central observed Metro fare"),
+                ("Median observed distance", f"{metro_artifacts['metro']['Distance'].median():.1f} km", "Central observed Metro trip length"),
+            ]
+        )
+
+
+# =========================================================
+# Data appendix
+# =========================================================
+with tab5:
+    render_section_title("Source and preparation summary")
+    render_badges(
+        [
+            meta.source_2019,
+            meta.source_2022,
+            f"2019 prepared days: {fmt_number(len(d2019_daily), 0)}",
+            f"2022 prepared days: {fmt_number(len(d2022_daily), 0)}",
+            f"2022 expansion factor: {fmt_number(expansion_factor, 3)}",
+        ]
+    )
+
+    st.write("")
+    a1, a2 = st.columns([1.0, 1.0], gap="large")
+
+    with a1:
+        render_section_title("2019 missingness")
+        miss_2019 = df2019_raw.isna().mean().sort_values(ascending=False).reset_index()
+        miss_2019.columns = ["Column", "Missing share"]
+        miss_2019["Missing share"] = miss_2019["Missing share"].map(lambda x: fmt_pct(x))
+        st.dataframe(miss_2019, use_container_width=True, hide_index=True)
+
+    with a2:
+        render_section_title("2022 missingness")
+        miss_2022 = df2022_raw.isna().mean().sort_values(ascending=False).reset_index()
+        miss_2022.columns = ["Column", "Missing share"]
+        miss_2022["Missing share"] = miss_2022["Missing share"].map(lambda x: fmt_pct(x))
+        st.dataframe(miss_2022, use_container_width=True, hide_index=True)
+
+    st.write("")
+    render_section_title("Prepared daily comparison table")
+    prepared_table = pd.DataFrame(
+        {
+            "Metric": [
+                "Total passengers across available days",
+                "Average daily passengers",
+                "Median daily passengers",
+                "Minimum daily passengers",
+                "Maximum daily passengers",
+            ],
+            "2019": [
+                fmt_number(d2019_daily["Total passengers"].sum(), 0),
+                fmt_number(d2019_daily["Total passengers"].mean(), 0),
+                fmt_number(d2019_daily["Total passengers"].median(), 0),
+                fmt_number(d2019_daily["Total passengers"].min(), 0),
+                fmt_number(d2019_daily["Total passengers"].max(), 0),
+            ],
+            "2022": [
+                fmt_number(d2022_daily["Total passengers"].sum(), 0),
+                fmt_number(d2022_daily["Total passengers"].mean(), 0),
+                fmt_number(d2022_daily["Total passengers"].median(), 0),
+                fmt_number(d2022_daily["Total passengers"].min(), 0),
+                fmt_number(d2022_daily["Total passengers"].max(), 0),
+            ],
+        }
+    )
+    st.dataframe(prepared_table, use_container_width=True, hide_index=True)
+
+    st.write("")
+    with st.expander("Preview prepared 2019 daily data"):
+        st.dataframe(d2019_daily.head(100), use_container_width=True, hide_index=True)
+
+    with st.expander("Preview prepared 2022 daily data"):
+        st.dataframe(d2022_daily.head(100), use_container_width=True, hide_index=True)
+
+    with st.expander("Preview raw 2022 data"):
+        st.dataframe(df2022_raw.head(100), use_container_width=True, hide_index=True)
